@@ -25,7 +25,7 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/6, stop/1, select_database/2]).
+-export([start_link/7, stop/1, select_database/2]).
 
 -export([do_sync_command/2]).
 
@@ -40,6 +40,7 @@
           database :: binary() | undefined,
           reconnect_sleep :: reconnect_sleep() | undefined,
           connect_timeout :: integer() | undefined,
+          lazy_connection :: boolean() | undefined,
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
@@ -55,11 +56,12 @@
                  Database::integer() | undefined,
                  Password::string(),
                  ReconnectSleep::reconnect_sleep(),
-                 ConnectTimeout::integer() | undefined) ->
+                 ConnectTimeout::integer() | undefined,
+                 LazyConnection::boolean()) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout) ->
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout], []).
+                                    ReconnectSleep, ConnectTimeout, LazyConnection], []).
 
 
 stop(Pid) ->
@@ -69,13 +71,14 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout]) ->
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection]) ->
     State = #state{host = Host,
                    port = Port,
                    database = read_database(Database),
                    password = list_to_binary(Password),
                    reconnect_sleep = ReconnectSleep,
                    connect_timeout = ConnectTimeout,
+                   lazy_connection = LazyConnection,
 
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
@@ -83,6 +86,8 @@ init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout]) ->
     case connect(State) of
         {ok, NewState} ->
             {ok, NewState};
+        {error, _Reason} when LazyConnection ->
+            {ok, State#state{socket = undefined}};
         {error, Reason} ->
             {stop, {connection_error, Reason}}
     end.
@@ -184,6 +189,14 @@ code_change(_OldVsn, State, _Extra) ->
                         {noreply, #state{}} | {reply, Reply::any(), #state{}}.
 %% @doc: Sends the given request to redis. If we do not have a
 %% connection, returns error.
+do_request(Req, From, #state{socket = undefined, lazy_connection = true} = State) ->
+    case catch(connect(State)) of
+        {ok, NewState} ->
+            do_request(Req, From, NewState);
+        _ ->
+            {reply, {error, no_connection}, State}
+    end;
+
 do_request(_Req, _From, #state{socket = undefined} = State) ->
     {reply, {error, no_connection}, State};
 
@@ -200,6 +213,14 @@ do_request(Req, From, State) ->
                          {noreply, #state{}} | {reply, Reply::any(), #state{}}.
 %% @doc: Sends the entire pipeline to redis. If we do not have a
 %% connection, returns error.
+do_pipeline(Pipeline, From, #state{socket = undefined, lazy_connection = true} = State) ->
+    case catch(connect(State)) of
+        {ok, NewState} ->
+            do_pipeline(Pipeline, From, NewState);
+        _ ->
+            {reply, {error, no_connection}, State}
+    end;
+
 do_pipeline(_Pipeline, _From, #state{socket = undefined} = State) ->
     {reply, {error, no_connection}, State};
 
