@@ -311,16 +311,21 @@ connect(State) ->
     case gen_tcp:connect(State#state.host, State#state.port,
                          ?SOCKET_OPTS, State#state.connect_timeout) of
         {ok, Socket} ->
-            case authenticate(Socket, State#state.password) of
+            try authenticate(Socket, State#state.password) of
                 ok ->
                     case select_database(Socket, State#state.database) of
                         ok ->
                             {ok, State#state{socket = Socket}};
                         {error, Reason} ->
+                            ok = gen_tcp:close(Socket),
                             {error, {select_error, Reason}}
                     end;
                 {error, Reason} ->
+                    ok = gen_tcp:close(Socket),
                     {error, {authentication_error, Reason}}
+            catch Class:Exception ->
+                ok = gen_tcp:close(Socket),
+                {error, {unexpected_error, {Class, Exception}}}
             end;
         {error, Reason} ->
             {error, {connection_error, Reason}}
