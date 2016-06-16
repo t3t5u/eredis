@@ -3,3 +3,4 @@ ebin/*
 *~
 Emakefile
 .rebar
+.dialyzer.plt

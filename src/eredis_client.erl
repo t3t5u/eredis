@@ -86,7 +86,8 @@ init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnec
     case connect(State) of
         {ok, NewState} ->
             {ok, NewState};
-        {error, _Reason} when LazyConnection ->
+        {error, _Reason} when LazyConnection, ReconnectSleep =/= no_reconnect ->
+            reconnect_after(State),
             {ok, State#state{socket = undefined}};
         {error, Reason} ->
             {stop, {connection_error, Reason}}
@@ -147,8 +148,7 @@ handle_info({tcp_closed, _Socket}, #state{reconnect_sleep = no_reconnect,
     {stop, normal, State#state{socket = undefined}};
 
 handle_info({tcp_closed, _Socket}, #state{queue = Queue} = State) ->
-    Self = self(),
-    spawn(fun() -> reconnect_loop(Self, State) end),
+    reconnect(State),
 
     %% tell all of our clients what has happened.
     reply_all({error, tcp_closed}, Queue),
@@ -162,6 +162,20 @@ handle_info({tcp_closed, _Socket}, #state{queue = Queue} = State) ->
 %% already connected and authenticated.
 handle_info({connection_ready, Socket}, #state{socket = undefined} = State) ->
     {noreply, State#state{socket = Socket}};
+
+%% Try to reconnect.
+handle_info(reconnect, #state{socket = undefined, lazy_connection = true} = State) ->
+    case catch(connect(State)) of
+        {ok, NewState} ->
+            {noreply, NewState};
+        _ ->
+            reconnect_after(State),
+            {noreply, State}
+    end;
+
+%% Maybe already reconnected.
+handle_info(reconnect, #state{lazy_connection = true} = State) ->
+    {noreply, State};
 
 %% eredis can be used in Poolboy, but it requires to support a simple API
 %% that Poolboy uses to manage the connections.
@@ -185,7 +199,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
--spec do_request(Req::iolist(), From::pid(), #state{}) ->
+-spec do_request(Req::iolist(), From::pid() | undefined, #state{}) ->
                         {noreply, #state{}} | {reply, Reply::any(), #state{}}.
 %% @doc: Sends the given request to redis. If we do not have a
 %% connection, returns error.
@@ -364,13 +378,27 @@ do_sync_command(Socket, Command) ->
             {error, Reason}
     end.
 
+-spec reconnect(#state{}) -> ok.
+reconnect(#state{lazy_connection = true}) ->
+    {ok, _} = timer:send_after(0, reconnect),
+    ok;
+reconnect(State) ->
+    Self = self(),
+    spawn(fun() -> reconnect_loop(Self, State) end),
+    ok.
+
+-spec reconnect_after(#state{}) -> ok.
+reconnect_after(#state{reconnect_sleep = ReconnectSleep}) ->
+    {ok, _} = timer:send_after(ReconnectSleep, reconnect),
+    ok.
+
 %% @doc: Loop until a connection can be established, this includes
 %% successfully issuing the auth and select calls. When we have a
 %% connection, give the socket to the redis client.
 reconnect_loop(Client, #state{reconnect_sleep = ReconnectSleep} = State) ->
     case catch(connect(State)) of
         {ok, #state{socket = Socket}} ->
-            gen_tcp:controlling_process(Socket, Client),
+            _ = gen_tcp:controlling_process(Socket, Client),
             Client ! {connection_ready, Socket};
         {error, _Reason} ->
             timer:sleep(ReconnectSleep),

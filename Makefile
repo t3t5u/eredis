@@ -1,5 +1,9 @@
 APP=eredis
 
+DIALYZER_OPTS=-Werror_handling -Wrace_conditions -Wunmatched_returns
+
+DIALYZER_PLT=.dialyzer.plt
+
 .PHONY: all compile clean Emakefile
 
 all: compile
@@ -25,3 +29,10 @@ endif
 Emakefile: Emakefile.src
 	sed "s/{{EXTRA_OPTS}}/$(EXTRA_OPTS)/" $< > $@
 
+.dialyzer.plt:
+	touch $(DIALYZER_PLT)
+	dialyzer --build_plt --plt $(DIALYZER_PLT) --apps erts \
+		$(shell erl -noshell -pa ebin -eval '{ok, _} = application:ensure_all_started($(APP)), [erlang:display(Name) || {Name, _, _} <- application:which_applications(), Name =/= $(APP)], halt().')
+
+dialyzer: .dialyzer.plt
+	dialyzer --no_native -pa ebin --plt $(DIALYZER_PLT) -r ebin $(DIALYZER_OPTS)
