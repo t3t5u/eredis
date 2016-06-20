@@ -102,6 +102,11 @@ handle_call({pipeline, Pipeline}, From, State) ->
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 
+handle_call(connection, _From, #state{socket = undefined} = State) ->
+    {reply, no, State};
+handle_call(connection, _From, State) ->
+    {reply, yes, State};
+
 handle_call(_Request, _From, State) ->
     {reply, unknown_request, State}.
 
