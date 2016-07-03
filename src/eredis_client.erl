@@ -25,7 +25,7 @@
 -include("eredis.hrl").
 
 %% API
--export([start_link/7, stop/1, select_database/2]).
+-export([start_link/8, stop/1, select_database/2]).
 
 -export([do_sync_command/2]).
 
@@ -41,6 +41,7 @@
           reconnect_sleep :: reconnect_sleep() | undefined,
           connect_timeout :: integer() | undefined,
           lazy_connection :: boolean() | undefined,
+          initializers :: [initializer()],
 
           socket :: port() | undefined,
           parser_state :: #pstate{} | undefined,
@@ -57,11 +58,12 @@
                  Password::string(),
                  ReconnectSleep::reconnect_sleep(),
                  ConnectTimeout::integer() | undefined,
-                 LazyConnection::boolean()) ->
+                 LazyConnection::boolean(),
+                 Initializers::[initializer()]) ->
                         {ok, Pid::pid()} | {error, Reason::term()}.
-start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection) ->
+start_link(Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection, Initializers) ->
     gen_server:start_link(?MODULE, [Host, Port, Database, Password,
-                                    ReconnectSleep, ConnectTimeout, LazyConnection], []).
+                                    ReconnectSleep, ConnectTimeout, LazyConnection, Initializers], []).
 
 
 stop(Pid) ->
@@ -71,7 +73,7 @@ stop(Pid) ->
 %% gen_server callbacks
 %%====================================================================
 
-init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection]) ->
+init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnection, Initializers]) ->
     State = #state{host = Host,
                    port = Port,
                    database = read_database(Database),
@@ -79,6 +81,7 @@ init([Host, Port, Database, Password, ReconnectSleep, ConnectTimeout, LazyConnec
                    reconnect_sleep = ReconnectSleep,
                    connect_timeout = ConnectTimeout,
                    lazy_connection = LazyConnection,
+                   initializers = Initializers,
 
                    parser_state = eredis_parser:init(),
                    queue = queue:new()},
@@ -334,7 +337,16 @@ connect(State) ->
                 ok ->
                     try select_database(Socket, State#state.database) of
                         ok ->
-                            {ok, State#state{socket = Socket}};
+                            try initialize(Socket, State#state.initializers) of
+                                ok ->
+                                    {ok, State#state{socket = Socket}};
+                                {error, Reason} ->
+                                    ok = gen_tcp:close(Socket),
+                                    {error, {initialize_error, Reason}}
+                            catch Class:Exception ->
+                                ok = gen_tcp:close(Socket),
+                                {error, {unexpected_error, {Class, Exception}}}
+                            end;
                         {error, Reason} ->
                             ok = gen_tcp:close(Socket),
                             {error, {select_error, Reason}}
@@ -351,6 +363,16 @@ connect(State) ->
             end;
         {error, Reason} ->
             {error, {connection_error, Reason}}
+    end.
+
+initialize(_Socket, []) ->
+    ok;
+initialize(Socket, [Initializer | Rest]) ->
+    case Initializer(Socket) of
+        ok ->
+            initialize(Socket, Rest);
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 select_database(_Socket, undefined) ->

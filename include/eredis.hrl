@@ -2,13 +2,18 @@
 
 -type reconnect_sleep() :: no_reconnect | integer().
 
+-type socket() :: port().
+
+-type initializer() :: fun((socket()) -> ok | {error, Reason::term()}).
+
 -type option() :: {host, string()}
                 | {port, integer()}
                 | {database, string()}
                 | {password, string()}
                 | {reconnect_sleep, reconnect_sleep()}
                 | {connect_timeout, integer()}
-                | {lazy_connection, boolean()}.
+                | {lazy_connection, boolean()}
+                | {initializers, [initializer()]}.
 -type server_args() :: [option()].
 
 -type return_value() :: undefined | binary() | [binary() | nonempty_list()].
